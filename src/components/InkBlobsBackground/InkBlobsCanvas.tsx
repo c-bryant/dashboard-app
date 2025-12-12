@@ -25,6 +25,8 @@ function InkBlobsCanvas() {
   const freezeReleaseTimerRef = useRef<number | null>(null);
   const worldToggleRef = useRef(false);
   const wordPhaseStartRef = useRef<number>(0);
+  const wordPhaseCooldownRef = useRef<number>(0);
+  const wordPhaseCountRef = useRef<number>(0);
   // Prevent user interaction for 5s after "HELLO" appears
   const helloFreezeUntil = useRef(0);
   const lastInteractionRef = useRef<number>(0);
@@ -118,15 +120,46 @@ function InkBlobsCanvas() {
       const y = e.clientY - rect.top;
       mouseX = x;
       mouseY = y;
-      const prev = prevMouseRef.current;
-      const MOVEMENT_THRESHOLD = 6; // pixels
-      let significant = false;
-      if (!prev) significant = true;
-      else if (Math.hypot(x - prev.x, y - prev.y) > MOVEMENT_THRESHOLD)
-        significant = true;
+      // Process every mousemove event immediately (no movement threshold)
       prevMouseRef.current = { x, y };
-      if (!significant) return;
       lastInteractionRef.current = performance.now();
+      if (DEBUG)
+        console.log('[InkBlobs] onMouseMove', {
+          x,
+          y,
+          phase,
+          freeze: freezeRef.current,
+          allowInteraction: allowInteractionRef.current,
+        });
+      // quick overlap check: if in word phase and frozen, unfreeze when cursor overlaps a blob
+      if (phase === 'word' && freezeRef.current) {
+        for (const bb of blobs) {
+          const dx = x - bb.x;
+          const dy = y - bb.y;
+          const dist = Math.hypot(dx, dy);
+          const wobble2 = Math.sin(bb.wobblePhase) * (bb.r * 0.08);
+          const radius = bb.r + wobble2;
+          if (dist > 0 && dist < radius) {
+            const nowLock = performance.now();
+            const lockExpired =
+              wordPhaseStartRef.current &&
+              nowLock >= wordPhaseStartRef.current + HELLO_ALLOW_INTERACTION_MS;
+            if (DEBUG)
+              console.log('[InkBlobs] onMouseMove: overlap -> consider break', {
+                blobIdx: blobs.indexOf(bb),
+                allowInteraction: allowInteractionRef.current,
+                lockExpired,
+                mouseDown,
+              });
+            if (mouseDown || allowInteractionRef.current || lockExpired) {
+              allowInteractionRef.current = true;
+              freezeRef.current = false;
+              tryBreakWordPhase();
+              break;
+            }
+          }
+        }
+      }
       // user interacted: record interaction. Do NOT break word phase here;
       // break is handled when hovering a blob after the hello lock expires.
     };
@@ -140,6 +173,12 @@ function InkBlobsCanvas() {
     const onMouseDown = () => {
       mouseDown = true;
       // Allow a simple click anywhere on the canvas to break word phase when allowed
+      if (DEBUG)
+        console.log('[InkBlobs] onMouseDown', {
+          phase,
+          freeze: freezeRef.current,
+          allowInteraction: allowInteractionRef.current,
+        });
       if (phase === 'word' && allowInteractionRef.current) {
         freezeRef.current = false;
         tryBreakWordPhase();
@@ -168,6 +207,15 @@ function InkBlobsCanvas() {
 
     function setMovePhase() {
       logDebug('setMovePhase: enter');
+      // clear any pending release/fallback timers when moving resumes
+      if (freezeReleaseTimerRef.current) {
+        clearTimeout(freezeReleaseTimerRef.current);
+        freezeReleaseTimerRef.current = null;
+      }
+      if (freezeTimerRef.current) {
+        clearTimeout(freezeTimerRef.current);
+        freezeTimerRef.current = null;
+      }
       phase = 'moving';
       freezeRef.current = false;
       targetsRef.current = [];
@@ -184,20 +232,53 @@ function InkBlobsCanvas() {
     function setWordPhase() {
       logDebug('setWordPhase: enter');
       const now = performance.now();
+      // short cooldown to prevent rapid re-entry
+      const COOLDOWN_MS = 600;
+      if (wordPhaseCooldownRef.current && now < wordPhaseCooldownRef.current) {
+        logDebug('setWordPhase: in cooldown, skipping', {
+          now,
+          cooldownUntil: wordPhaseCooldownRef.current,
+        });
+        return;
+      }
       console.log(
         '[InkBlobs] setWordPhase called, time:',
         now,
         'targets:',
         targetsRef.current.length
       );
-      // If there are no targets, don't enter word phase
+      // If there are no targets, try safe fallbacks so word phase can still run
       if (!targetsRef.current || targetsRef.current.length === 0) {
-        logDebug('setWordPhase: no targets - skipping');
-        return;
+        logDebug(
+          'setWordPhase: computed zero targets — using fallback targets'
+        );
+        // Prefer precomputed hello/world targets if present
+        if (helloTargets && helloTargets.length) {
+          targetsRef.current = helloTargets;
+        } else if (worldTargets && worldTargets.length) {
+          targetsRef.current = worldTargets;
+        } else {
+          // Generate a simple grid of fallback targets
+          const fallback: Array<{ x: number; y: number }> = [];
+          const cols = Math.max(6, Math.floor(width / 60));
+          const rows = Math.max(3, Math.floor(height / 60));
+          for (let r = 0; r < rows; r++) {
+            for (let c = 0; c < cols; c++) {
+              const x = (c + 0.5) * (width / cols);
+              const y = (r + 0.5) * (height / rows);
+              fallback.push({ x, y });
+            }
+          }
+          targetsRef.current = fallback;
+        }
       }
       phase = 'word';
+      wordPhaseCountRef.current += 1;
+      logDebug('setWordPhase: count', wordPhaseCountRef.current);
       // record start time for word phase
-      wordPhaseStartRef.current = performance.now();
+      wordPhaseStartRef.current = now;
+      // set cooldown to avoid immediate re-entry
+      wordPhaseCooldownRef.current = now + COOLDOWN_MS;
       // clear any move phase end time so word phase persists until user interaction
       movePhaseEndTimeRef.current = 0;
       // First word phase should always be HELLO
@@ -233,10 +314,35 @@ function InkBlobsCanvas() {
       // Timer to allow interaction after HELLO_ALLOW_INTERACTION_MS
       freezeReleaseTimerRef.current = window.setTimeout(() => {
         allowInteractionRef.current = true;
+        if (DEBUG) {
+          console.log('[InkBlobs] freezeReleaseTimer fired', {
+            wordPhaseCount: wordPhaseCountRef.current,
+            mouseX,
+            mouseY,
+            allowInteraction: allowInteractionRef.current,
+            wordPhaseStart: wordPhaseStartRef.current,
+          });
+        }
         // If fallback timer is still running, clear it
         if (freezeTimerRef.current) {
           clearTimeout(freezeTimerRef.current);
           freezeTimerRef.current = null;
+        }
+        // If the cursor is already over a blob when interaction becomes allowed,
+        // unfreeze immediately so hover doesn't require a click or movement.
+        if (mouseX !== null && mouseY !== null) {
+          for (const bb of blobs) {
+            const dxm = mouseX - bb.x;
+            const dym = mouseY - bb.y;
+            const distm = Math.hypot(dxm, dym);
+            const wobble2 = Math.sin(bb.wobblePhase) * (bb.r * 0.08);
+            const radius = bb.r + wobble2;
+            if (distm > 0 && distm < radius) {
+              freezeRef.current = false;
+              tryBreakWordPhase();
+              break;
+            }
+          }
         }
       }, HELLO_ALLOW_INTERACTION_MS) as unknown as number;
       helloFreezeUntil.current = performance.now() + HELLO_ALLOW_INTERACTION_MS;
@@ -276,8 +382,8 @@ function InkBlobsCanvas() {
     }
 
     const collide = (a: Blob, b: Blob) => {
-      // when frozen into the dot-matrix, skip collision responses to avoid jitter
-      if (freezeRef.current) return;
+      // allow collisions even while frozen so forces (mouse hits) propagate
+      // through the system; keep positional correction to avoid sinking
       const dx = b.x - a.x;
       const dy = b.y - a.y;
       const dist = Math.hypot(dx, dy) || 0.0001;
@@ -308,21 +414,49 @@ function InkBlobsCanvas() {
         }
       }
 
-      // Impulse-based collision resolution (equal mass)
-      // Relative velocity along normal
+      // Impulse-based collision resolution using mass-weighted impulses
+      // Mass ~ area ~ r^2 so larger blobs move less from collisions
+      const ma = Math.max(1, a.r * a.r);
+      const mb = Math.max(1, b.r * b.r);
       const relVel = (b.vx - a.vx) * nx + (b.vy - a.vy) * ny;
-      // If velocities are separating, no impulse needed
+      const restitution = 0.92; // slight bounciness
       if (relVel < 0) {
-        const restitution = 0.9; // bounciness
-        // impulse scalar for equal masses: j = -(1+e)*relVel / (1/m + 1/m) = -(1+e)*relVel/2
-        const j = (-(1 + restitution) * relVel) / 2;
+        // scalar impulse j solving for velocities change: j = -(1+e)*relVel / (1/ma + 1/mb)
+        let j = (-(1 + restitution) * relVel) / (1 / ma + 1 / mb);
+        // amplify impulse if either blob was recently hit by the mouse
+        if (a.wasMouseHit || b.wasMouseHit) j *= 1.4;
         const jx = j * nx;
         const jy = j * ny;
-        a.vx -= jx;
-        a.vy -= jy;
-        b.vx += jx;
-        b.vy += jy;
+        a.vx -= jx / ma;
+        a.vy -= jy / ma;
+        b.vx += jx / mb;
+        b.vy += jy / mb;
+
+        // tangential (friction-like) impulse to transfer some tangential velocity
+        const tx = -ny;
+        const ty = nx;
+        const relTan = (b.vx - a.vx) * tx + (b.vy - a.vy) * ty;
+        const mu = 0.12; // small tangential transfer
+        const jt = Math.max(
+          -mu * j,
+          Math.min(mu * j, -relTan / (1 / ma + 1 / mb))
+        );
+        const jtx = jt * tx;
+        const jty = jt * ty;
+        a.vx -= jtx / ma;
+        a.vy -= jty / ma;
+        b.vx += jtx / mb;
+        b.vy += jty / mb;
       }
+
+      // Small penetration impulse to ensure separation, scaled by mass
+      const penImpulse = Math.min(overlap * 1.2, 6.0);
+      const pix = penImpulse * nx;
+      const piy = penImpulse * ny;
+      a.vx -= pix / ma;
+      a.vy -= piy / ma;
+      b.vx += pix / mb;
+      b.vy += piy / mb;
 
       // Always propagate mouse-hit state when collision occurs
       if (a.wasMouseHit || b.wasMouseHit) {
@@ -354,16 +488,7 @@ function InkBlobsCanvas() {
         a.deformY -= ny * deformAmt;
         b.deformX += nx * deformAmt;
         b.deformY += ny * deformAmt;
-        // If collision is strong while in word phase, allow interaction and attempt to break word phase
-        const STRONG_COLLISION_THRESHOLD = Math.max(0.5, (a.r + b.r) * 0.01);
-        const collisionStrength = Math.abs(relApproach) + overlap * 0.01;
-        if (
-          phase === 'word' &&
-          collisionStrength > STRONG_COLLISION_THRESHOLD
-        ) {
-          allowInteractionRef.current = true;
-          tryBreakWordPhase();
-        }
+        // collisions deform blobs but do not change the word/move phase
       }
     };
 
@@ -390,7 +515,7 @@ function InkBlobsCanvas() {
             freezeTimerRef.current = null;
           }
         }
-        const cursorActive = !freezeRef.current || allowInteractionRef.current;
+
         if (phase === 'word' && targetsRef.current.length) {
           // Only move blobs to targets in word phase
           const idx = blobs.indexOf(b);
@@ -475,51 +600,59 @@ function InkBlobsCanvas() {
           b.y = height - effR;
           b.vy *= -1;
         }
-        if (cursorActive && mouseX !== null && mouseY !== null) {
+        if (mouseX !== null && mouseY !== null) {
           const dxm = mouseX - b.x;
           const dym = mouseY - b.y;
           const distm = Math.hypot(dxm, dym);
           const wobble2 = Math.sin(b.wobblePhase) * (b.r * 0.08);
           const radius = b.r + wobble2;
           if (distm > 0 && distm < radius) {
+            const nxm = dxm / distm;
+            const nym = dym / distm;
+            const nowHit = performance.now();
+            // Run unfreeze check every frame while cursor is over the blob
+            lastInteractionRef.current = nowHit;
+            b.lastMouseHit = nowHit;
+            b.wasMouseHit = true;
+            if (freezeRef.current) {
+              const nowLock = performance.now();
+              const lockExpired =
+                wordPhaseStartRef.current &&
+                nowLock >=
+                  wordPhaseStartRef.current + HELLO_ALLOW_INTERACTION_MS;
+              if (DEBUG)
+                console.log('[InkBlobs] hoverDecision', {
+                  wordPhaseCount: wordPhaseCountRef.current,
+                  mouseDown,
+                  allowInteraction: allowInteractionRef.current,
+                  lockExpired,
+                });
+              if (mouseDown || allowInteractionRef.current || lockExpired) {
+                freezeRef.current = false;
+                allowInteractionRef.current = true;
+                tryBreakWordPhase();
+                b.r = Math.max(16, Math.min(width, height) * 0.02);
+              }
+            }
+            // Apply the stronger mouse-hit impulse only on initial entry
             if (!b.mouseOverActive) {
               b.mouseOverActive = true;
-              const nxm = dxm / distm;
-              const nym = dym / distm;
-              const nowHit = performance.now();
-              b.lastMouseHit = nowHit;
-              b.wasMouseHit = true;
-              lastInteractionRef.current = nowHit;
-              if (freezeRef.current) {
-                const nowLock = performance.now();
-                const lockExpired =
-                  wordPhaseStartRef.current &&
-                  nowLock >=
-                    wordPhaseStartRef.current + HELLO_ALLOW_INTERACTION_MS;
-                if (mouseDown || lockExpired) {
-                  // Unfreeze only after lock expired or on mouseDown
-                  allowInteractionRef.current = true;
-                  freezeRef.current = false;
-                  tryBreakWordPhase();
-                  b.r = Math.max(16, Math.min(width, height) * 0.02);
-                }
-              }
               const vdot = b.vx * nxm + b.vy * nym;
               const restitution = 3.0; // stronger bounce
               b.vx -= restitution * vdot * nxm;
               b.vy -= restitution * vdot * nym;
               const penetration = radius - distm;
-              const impulse = Math.min(1.4, penetration * 0.08); // larger impulse
+              const impulse = Math.min(2.0, penetration * 0.12); // stronger immediate impulse
               b.vx -= nxm * impulse;
               b.vy -= nym * impulse;
               const accelPulse = Math.min(
-                1.6,
-                (penetration / Math.max(1, radius)) * (b.r * 0.004)
+                2.0,
+                (penetration / Math.max(1, radius)) * (b.r * 0.006)
               );
               b.vx -= nxm * accelPulse;
               b.vy -= nym * accelPulse;
               // Limit velocity after mouse hit to keep blob in system
-              const maxAfterMouse = 1.5;
+              const maxAfterMouse = 2.2;
               const sp = Math.hypot(b.vx, b.vy);
               if (sp > maxAfterMouse) {
                 const k = maxAfterMouse / sp;
@@ -535,7 +668,8 @@ function InkBlobsCanvas() {
     };
     // Handle collisions between blobs
     // Run collision loop multiple times per frame for more robust interaction
-    for (let pass = 0; pass < 3; pass++) {
+    // (increase passes to help chain reactions propagate)
+    for (let pass = 0; pass < 6; pass++) {
       for (let i = 0; i < blobs.length; i++) {
         for (let j = i + 1; j < blobs.length; j++) {
           collide(blobs[i], blobs[j]);
