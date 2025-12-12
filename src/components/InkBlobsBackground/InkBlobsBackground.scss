@@ -1,0 +1,172 @@
+/* Full-viewport, behind content, animated purple ink blobs */
+.ink-blobs-bg {
+  position: absolute;
+  inset: 0;
+  z-index: 0; /* beneath content text but within content-area */
+  pointer-events: none;
+}
+
+/* Gooey group */
+.blobs {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  /* Use normal compositing to avoid unintended dimming */
+  mix-blend-mode: normal;
+}
+
+.blob {
+  position: absolute;
+  width: 280px;
+  height: 280px;
+  border-radius: 50%;
+  opacity: 1; /* no transparency */
+  /* Remove blur for crisp edges */
+  filter: none;
+  /* No inner glow */
+  box-shadow: none;
+  /* motion handled via Web Animations API to avoid pop-in */
+  animation: none;
+  transform: translate3d(0, 0, 0);
+  will-change: transform, filter;
+}
+
+/* Black & white orb gradient driven by per-blob lightness variables */
+.blob.mono {
+  --light: 95; /* center lightness */
+  --mid: 75; /* mid ring lightness */
+  --dark: 20; /* outer falloff lightness */
+  background: radial-gradient(
+    circle at 35% 35%,
+    hsla(0, 0%, var(--light), 1) 0%,
+    hsla(0, 0%, var(--mid), 0.92) 35%,
+    hsla(0, 0%, calc(var(--mid) - 15), 0.8) 65%,
+    hsla(0, 0%, var(--dark), 0.18) 100%
+  );
+}
+
+/* Colored orb (uses per-blob hue) */
+.blob.color {
+  --hue: 230; /* default indigo unless overridden */
+  background: radial-gradient(
+    circle at 35% 35%,
+    hsla(var(--hue), 92%, 70%, 1) 0%,
+    hsla(calc(var(--hue) - 20), 88%, 62%, 0.92) 35%,
+    hsla(calc(var(--hue) - 40), 82%, 55%, 0.8) 65%,
+    hsla(calc(var(--hue) - 60), 75%, 52%, 0.18) 100%
+  );
+}
+
+/* Slightly different sizes for variety */
+.b2,
+.b5 {
+  width: 340px;
+  height: 340px;
+}
+.b3,
+.b6 {
+  width: 220px;
+  height: 220px;
+}
+
+/* Starting positions */
+.b1 {
+  left: 6%;
+  top: 12%;
+  animation-delay: 0s;
+}
+.b2 {
+  left: 72%;
+  top: 18%;
+  animation-delay: 1.5s;
+}
+.b3 {
+  left: 20%;
+  top: 70%;
+  animation-delay: 4.2s;
+}
+.b4 {
+  left: 56%;
+  top: 68%;
+  animation-delay: 7.8s;
+}
+.b5 {
+  left: 32%;
+  top: 28%;
+  animation-delay: 10.1s;
+}
+.b6 {
+  left: 82%;
+  top: 76%;
+  animation-delay: 12.4s;
+}
+.b7 {
+  left: 12%;
+  top: 42%;
+  animation-delay: 14.7s;
+}
+
+/* Randomize motion per bubble via varied durations */
+.b1 {
+  animation-duration: 12s, 18s;
+}
+.b2 {
+  animation-duration: 15s, 16s;
+}
+.b3 {
+  animation-duration: 13s, 20s;
+}
+.b4 {
+  animation-duration: 17s, 17s;
+}
+.b5 {
+  animation-duration: 14s, 21s;
+}
+.b6 {
+  animation-duration: 11s, 19s;
+}
+.b7 {
+  animation-duration: 18s, 16s;
+}
+
+/* Grayscale mode: no per-blob hue needed */
+
+/* Soft hue rotation over time for a rainbow drift */
+@keyframes hue-shift {
+  0% {
+    filter: hue-rotate(0deg);
+  }
+  50% {
+    filter: hue-rotate(30deg);
+  }
+  100% {
+    filter: hue-rotate(0deg);
+  }
+}
+
+/* Remove variant clip-paths for initial circular bubbles */
+
+@keyframes drift {
+  0% {
+    transform: translate(0, 0) scale(1);
+    filter: hue-rotate(0deg) saturate(120%);
+  }
+  20% {
+    transform: translate(120px, -90px) scale(1.08);
+  }
+  40% {
+    transform: translate(-140px, 110px) scale(0.96);
+  }
+  60% {
+    transform: translate(85px, 160px) scale(1.06);
+  }
+  80% {
+    transform: translate(-100px, -130px) scale(0.98);
+  }
+  100% {
+    transform: translate(0, 0) scale(1);
+    filter: hue-rotate(20deg) saturate(120%);
+  }
+}
+
+/* Remove morphing for initial style */

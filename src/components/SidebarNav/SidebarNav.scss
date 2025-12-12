@@ -1,0 +1,198 @@
+nav {
+  display: flex;
+}
+
+/* Slide in/out left-right for the whole sidebar */
+.sidebar-nav {
+  flex-flow: column nowrap;
+  color: white;
+  /* position the sidebar starting right at the bottom edge of the top-bar */
+  margin-top: 85px;
+
+  /* Match top-bar glass style */
+  /* Subtle blue tint with even lower opacity for more see-through glass */
+  background-color: rgba(100, 100, 255, 0.03);
+  backdrop-filter: saturate(190%) blur(20px);
+  -webkit-backdrop-filter: saturate(190%) blur(20px);
+  /* Remove gradient; rely on translucency only */
+  background-image: none;
+  /* Remove borders for clean glass edge */
+  border: none;
+  /* Depth and faint blue glow similar to top-bar */
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.2), 0 0 6px rgba(100, 100, 255, 0.12);
+  height: 100vh;
+  overflow-x: hidden;
+  overflow-y: auto;
+  /* Remove rounded corners for a sharper edge */
+  border-radius: 0;
+  /* Fade in and slide down from beneath the top-bar */
+  --sidebar-width: 10vw;
+  width: var(--sidebar-width);
+  transform: translateY(-12px);
+  opacity: 0;
+  transition: transform 480ms cubic-bezier(0.2, 0.7, 0.2, 1),
+    opacity 480ms cubic-bezier(0.2, 0.7, 0.2, 1);
+  /* Remove seam overlay; rely on consistent layering */
+  mask-image: none;
+  pointer-events: none;
+  display: flex;
+  /* sidebar now sits below the top-bar */
+}
+
+/* remove seam overlay; top-bar now visually layers over the sidebar */
+
+/* Sidebar's internal header is not shown; global top-bar handles this */
+.sidebar-nav__label .sidebar-nav__label-header {
+  display: none;
+}
+
+/* Visible state: slide in and occupy sidebar width */
+.sidebar-nav[data-visible='true'] {
+  transform: translateY(0);
+  opacity: 1;
+  pointer-events: auto;
+  display: flex;
+  // width: 10vw;
+  min-width: 175px;
+  max-width: 250px;
+}
+
+/* When hiding, fade up and out for a cleaner exit */
+.sidebar-nav[data-visible='false'],
+.sidebar-nav[aria-hidden='true'] {
+  /* Use transitions for exit; keep transform/opacity synced */
+  transform: translateY(-12px);
+  opacity: 0;
+  transition: transform 480ms cubic-bezier(0.2, 0.7, 0.2, 1),
+    opacity 480ms cubic-bezier(0.2, 0.7, 0.2, 1);
+  will-change: opacity, transform;
+  pointer-events: none;
+  /* Remove from flow to avoid reflow stutter while animating out */
+  position: absolute;
+  left: 0;
+  top: 75px;
+  width: var(--sidebar-width);
+  /* Ensure no residual outline during/after exit */
+  box-shadow: none;
+  outline: none;
+  /* Disable blur during exit to prevent a transparent box frame */
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+
+/* remove delay when transitioning back to hidden */
+/* no delay; sidebar animation stays in sync with top-bar */
+
+/* Header hidden unconditionally to avoid duplication with global top-bar */
+
+/* Hide header when sidebar is hidden */
+/* panel content no longer needs top offset; global top-bar adjusts main content */
+
+li {
+  display: flex;
+  justify-content: center;
+  transition: 0.35s ease-in-out;
+  margin-bottom: 50px;
+  width: 100%;
+  justify-content: flex-start;
+  padding: 0 20px;
+
+  &:hover {
+    cursor: pointer;
+  }
+
+  a {
+    margin-left: 20px;
+    color: white;
+    font-weight: bold;
+    font-size: 18px;
+  }
+
+  /* Make icons inherit color and change on hover/focus like the link text */
+  .sidebar-nav li svg {
+    transition: color 0.3s ease;
+    color: white;
+  }
+
+  .sidebar-nav li:hover a,
+  .sidebar-nav li:focus-within a,
+  .sidebar-nav li:hover svg,
+  .sidebar-nav li:focus-within svg {
+    color: #646cff;
+  }
+}
+
+/* Utility for screen-reader only text */
+.sr-only {
+  position: absolute !important;
+  height: 1px;
+  width: 1px;
+  overflow: hidden;
+  clip: rect(1px, 1px, 1px, 1px);
+  white-space: nowrap;
+}
+
+/* Panel enter animation */
+.sidebar-panel {
+  /* animate the whole panel on mount */
+  opacity: 0;
+  transform: translateY(-8px);
+  animation: panelFadeDown 240ms ease forwards;
+}
+
+.panel-list li {
+  padding-top: 50px;
+  opacity: 0;
+  transform: translateY(-8px);
+  animation: panelFadeDown 320ms ease forwards;
+}
+
+/* stagger the items so they appear after the panel enters */
+.panel-list li:nth-child(1) {
+  animation-delay: 120ms;
+}
+.panel-list li:nth-child(2) {
+  animation-delay: 160ms;
+}
+.panel-list li:nth-child(3) {
+  animation-delay: 200ms;
+}
+.panel-list li:nth-child(4) {
+  animation-delay: 240ms;
+}
+
+.panel-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+
+.panel-label {
+  opacity: 0;
+  transform: translateY(-8px);
+  animation: panelFadeDown 240ms ease forwards;
+  animation-delay: 80ms;
+}
+
+@keyframes panelFadeDown {
+  from {
+    opacity: 0;
+    transform: translateY(-8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* Exit uses panelFadeDown with animation-direction: reverse */
+
+/* Discretely hide at the end to prevent any flash */
+@keyframes hideVis {
+  from {
+    visibility: visible;
+  }
+  to {
+    visibility: hidden;
+  }
+}
