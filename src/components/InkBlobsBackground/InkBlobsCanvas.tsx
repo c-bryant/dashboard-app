@@ -131,8 +131,12 @@ function InkBlobsCanvas() {
           freeze: freezeRef.current,
           allowInteraction: allowInteractionRef.current,
         });
-      // quick overlap check: if in word phase and frozen, unfreeze when cursor overlaps a blob
-      if (phase === 'word' && freezeRef.current) {
+      // quick overlap check: if in word phase and interaction allowed, unfreeze when cursor overlaps a blob
+      if (
+        phase === 'word' &&
+        allowInteractionRef.current &&
+        freezeRef.current
+      ) {
         for (const bb of blobs) {
           const dx = x - bb.x;
           const dy = y - bb.y;
@@ -140,23 +144,41 @@ function InkBlobsCanvas() {
           const wobble2 = Math.sin(bb.wobblePhase) * (bb.r * 0.08);
           const radius = bb.r + wobble2;
           if (dist > 0 && dist < radius) {
-            const nowLock = performance.now();
-            const lockExpired =
-              wordPhaseStartRef.current &&
-              nowLock >= wordPhaseStartRef.current + HELLO_ALLOW_INTERACTION_MS;
             if (DEBUG)
-              console.log('[InkBlobs] onMouseMove: overlap -> consider break', {
+              console.log('[InkBlobs] onMouseMove: overlap -> break', {
                 blobIdx: blobs.indexOf(bb),
-                allowInteraction: allowInteractionRef.current,
-                lockExpired,
-                mouseDown,
               });
-            if (mouseDown || allowInteractionRef.current || lockExpired) {
-              allowInteractionRef.current = true;
-              freezeRef.current = false;
-              tryBreakWordPhase();
-              break;
+            freezeRef.current = false;
+            tryBreakWordPhase();
+            // Apply immediate mouse-hit impulse for instant visual response
+            const nxm = dx / dist;
+            const nym = dy / dist;
+            const nowHit = performance.now();
+            bb.lastMouseHit = nowHit;
+            bb.wasMouseHit = true;
+            lastInteractionRef.current = nowHit;
+            const vdotm = bb.vx * nxm + bb.vy * nym;
+            const restitutionM = 3.2;
+            bb.vx -= restitutionM * vdotm * nxm;
+            bb.vy -= restitutionM * vdotm * nym;
+            const penetrationM = Math.max(0, radius - dist);
+            const impulseM = Math.min(2.6, penetrationM * 0.18);
+            bb.vx -= nxm * impulseM;
+            bb.vy -= nym * impulseM;
+            const accelPulseM = Math.min(
+              2.4,
+              (penetrationM / Math.max(1, radius)) * (bb.r * 0.008)
+            );
+            bb.vx -= nxm * accelPulseM;
+            bb.vy -= nym * accelPulseM;
+            const maxAfterMouseM = 3.0;
+            const spm = Math.hypot(bb.vx, bb.vy);
+            if (spm > maxAfterMouseM) {
+              const k = maxAfterMouseM / spm;
+              bb.vx *= k;
+              bb.vy *= k;
             }
+            break;
           }
         }
       }
@@ -381,6 +403,16 @@ function InkBlobsCanvas() {
       }
     }
 
+    // collision diagnostics
+    const collisionStats: {
+      checks: number;
+      near: number;
+      collided: number;
+      lastLog: number;
+    } = { checks: 0, near: 0, collided: 0, lastLog: performance.now() };
+    // visual debug arrays
+    let nearPairs: Array<[number, number]> = [];
+
     const collide = (a: Blob, b: Blob) => {
       // allow collisions even while frozen so forces (mouse hits) propagate
       // through the system; keep positional correction to avoid sinking
@@ -388,8 +420,38 @@ function InkBlobsCanvas() {
       const dy = b.y - a.y;
       const dist = Math.hypot(dx, dy) || 0.0001;
       const minDist = a.r + b.r;
-      const contactMargin = minDist * 0.005;
-      if (dist > minDist + contactMargin) return;
+      const contactMargin = minDist * 0.02; // larger margin for more reliable contact
+      // diagnostics
+      collisionStats.checks++;
+      if (dist < minDist * 1.2) {
+        collisionStats.near++;
+        // record near pair for visualization
+        try {
+          const ai = blobs.indexOf(a);
+          const bi = blobs.indexOf(b);
+          if (ai >= 0 && bi >= 0) nearPairs.push([ai, bi]);
+        } catch (e) {}
+      }
+      if (dist > minDist + contactMargin) {
+        // log near-misses (throttled) to help diagnose missed collisions
+        try {
+          const nowLog = performance.now();
+          const last = (window as any).__ink_last_near_log || 0;
+          if (nowLog - last > 500 && dist < minDist * 1.05) {
+            (window as any).__ink_last_near_log = nowLog;
+            if ((window as any).console && (window as any).console.log) {
+              console.log('[InkBlobs] near-miss', {
+                ai: blobs.indexOf(a),
+                bi: blobs.indexOf(b),
+                dist,
+                minDist,
+                contactMargin,
+              });
+            }
+          }
+        } catch (e) {}
+        return;
+      }
       const nx = dx / dist;
       const ny = dy / dist;
       const overlap = Math.max(0, minDist - dist);
@@ -413,50 +475,88 @@ function InkBlobsCanvas() {
           });
         }
       }
-
-      // Impulse-based collision resolution using mass-weighted impulses
-      // Mass ~ area ~ r^2 so larger blobs move less from collisions
-      const ma = Math.max(1, a.r * a.r);
-      const mb = Math.max(1, b.r * b.r);
-      const relVel = (b.vx - a.vx) * nx + (b.vy - a.vy) * ny;
-      const restitution = 0.92; // slight bounciness
-      if (relVel < 0) {
-        // scalar impulse j solving for velocities change: j = -(1+e)*relVel / (1/ma + 1/mb)
-        let j = (-(1 + restitution) * relVel) / (1 / ma + 1 / mb);
-        // amplify impulse if either blob was recently hit by the mouse
-        if (a.wasMouseHit || b.wasMouseHit) j *= 1.4;
-        const jx = j * nx;
-        const jy = j * ny;
-        a.vx -= jx / ma;
-        a.vy -= jy / ma;
-        b.vx += jx / mb;
-        b.vy += jy / mb;
-
-        // tangential (friction-like) impulse to transfer some tangential velocity
-        const tx = -ny;
-        const ty = nx;
-        const relTan = (b.vx - a.vx) * tx + (b.vy - a.vy) * ty;
-        const mu = 0.12; // small tangential transfer
-        const jt = Math.max(
-          -mu * j,
-          Math.min(mu * j, -relTan / (1 / ma + 1 / mb))
-        );
-        const jtx = jt * tx;
-        const jty = jt * ty;
-        a.vx -= jtx / ma;
-        a.vy -= jty / ma;
-        b.vx += jtx / mb;
-        b.vy += jty / mb;
+      // mark collided for diagnostics
+      if (overlap > 0) {
+        (a as any)._collided = true;
+        (b as any)._collided = true;
+        collisionStats.collided++;
       }
 
-      // Small penetration impulse to ensure separation, scaled by mass
-      const penImpulse = Math.min(overlap * 1.2, 6.0);
-      const pix = penImpulse * nx;
-      const piy = penImpulse * ny;
-      a.vx -= pix / ma;
-      a.vy -= piy / ma;
-      b.vx += pix / mb;
-      b.vy += piy / mb;
+      // Resolve collision by decomposing velocities into normal and tangent
+      // and applying a 1D elastic collision along the normal (mass-weighted).
+      const m1 = Math.max(0.01, a.r * a.r);
+      const m2 = Math.max(0.01, b.r * b.r);
+      const restitution = 0.95; // slightly inelastic for stability
+
+      // tangent vector (perpendicular to normal)
+      const tx = -ny;
+      const ty = nx;
+
+      // project velocities onto normal and tangent
+      const va_n = a.vx * nx + a.vy * ny;
+      const va_t = a.vx * tx + a.vy * ty;
+      const vb_n = b.vx * nx + b.vy * ny;
+      const vb_t = b.vx * tx + b.vy * ty;
+
+      // Only resolve if they're moving towards each other along the normal
+      if (va_n - vb_n > 0) {
+        const va_n_after = (va_n * (m1 - restitution * m2) + (1 + restitution) * m2 * vb_n) / (m1 + m2);
+        const vb_n_after = (vb_n * (m2 - restitution * m1) + (1 + restitution) * m1 * va_n) / (m1 + m2);
+
+        // convert scalar normal/tangent back to vectors
+        a.vx = va_n_after * nx + va_t * tx;
+        a.vy = va_n_after * ny + va_t * ty;
+        b.vx = vb_n_after * nx + vb_t * tx;
+        b.vy = vb_n_after * ny + vb_t * ty;
+      }
+
+      // Small positional correction to prevent sinking
+      const penFactor = Math.min(overlap * 1.0, 8.0);
+      const pix = penFactor * nx;
+      const piy = penFactor * ny;
+      a.x -= pix * 0.5;
+      a.y -= piy * 0.5;
+      b.x += pix * 0.5;
+      b.y += piy * 0.5;
+
+      // Also apply a small mass-weighted velocity transfer based on penetration
+      // so overlapping blobs transfer momentum even if not strictly approaching
+      const velTransferFactor = 0.6;
+      a.vx -= (pix * velTransferFactor) / m1;
+      a.vy -= (piy * velTransferFactor) / m1;
+      b.vx += (pix * velTransferFactor) / m2;
+      b.vy += (piy * velTransferFactor) / m2;
+
+      // If one of the blobs was recently hit by the mouse, transfer additional
+      // momentum to the other blob proportional to hit recency and relative speed.
+      const nowHitTime = performance.now();
+      const MOUSE_HIT_DECAY_MS = 300; // recency window
+      const mouseTransferScale = 0.8; // how strongly mouse-hit transfers
+      const applyMouseTransfer = (source: Blob, target: Blob) => {
+        if (!source.wasMouseHit) return;
+        const age = nowHitTime - (source.lastMouseHit || 0);
+        if (age > MOUSE_HIT_DECAY_MS) return;
+        const recency = Math.max(0, 1 - age / MOUSE_HIT_DECAY_MS);
+        // transfer amount based on recency and relative approach speed
+        const rel = Math.abs(relVel) + 0.5;
+        const extra = Math.min(
+          6.0,
+          mouseTransferScale * recency * rel * (source.r * 0.02)
+        );
+        const ex = extra * nx;
+        const ey = extra * ny;
+        const sm = Math.max(0.01, source.r * source.r);
+        const tm = Math.max(0.01, target.r * target.r);
+        source.vx -= ex / sm;
+        source.vy -= ey / sm;
+        target.vx += ex / tm;
+        target.vy += ey / tm;
+        // propagate mouse-hit flag so momentum can cascade
+        target.wasMouseHit = true;
+      };
+
+      applyMouseTransfer(a, b);
+      applyMouseTransfer(b, a);
 
       // Always propagate mouse-hit state when collision occurs
       if (a.wasMouseHit || b.wasMouseHit) {
@@ -668,13 +768,68 @@ function InkBlobsCanvas() {
     };
     // Handle collisions between blobs
     // Run collision loop multiple times per frame for more robust interaction
-    // (increase passes to help chain reactions propagate)
-    for (let pass = 0; pass < 6; pass++) {
+    // increase passes to reduce tunneling and missed collisions
+    // clear collision flags and visual pairs
+    for (const bl of blobs) (bl as any)._collided = false;
+    nearPairs.length = 0;
+    let collisionCount = 0;
+    for (let pass = 0; pass < 5; pass++) {
       for (let i = 0; i < blobs.length; i++) {
         for (let j = i + 1; j < blobs.length; j++) {
+          const beforeA = (blobs[i] as any)._collided;
+          const beforeB = (blobs[j] as any)._collided;
           collide(blobs[i], blobs[j]);
+          const afterA = (blobs[i] as any)._collided;
+          const afterB = (blobs[j] as any)._collided;
+          if (!beforeA && afterA) collisionCount++;
+          if (!beforeB && afterB) collisionCount++;
         }
       }
+    }
+    if (DEBUG && collisionCount > 0) {
+      console.log('[InkBlobs] collisions this frame', collisionCount);
+    }
+    // log collision diagnostics once per second
+    const nowDiag = performance.now();
+    if (nowDiag - (collisionStats as any).lastLog > 1000) {
+      (collisionStats as any).lastLog = nowDiag;
+      if (DEBUG)
+        console.log('[InkBlobs] collisionStats', {
+          checks: (collisionStats as any).checks,
+          near: (collisionStats as any).near,
+          collided: (collisionStats as any).collided,
+        });
+      // reset counters each second
+      (collisionStats as any).checks = 0;
+      (collisionStats as any).near = 0;
+      (collisionStats as any).collided = 0;
+    }
+
+    // draw visual debug overlays for near pairs and stats
+    if (DEBUG) {
+      // draw near pair lines
+      ctx.save();
+      ctx.lineWidth = 1;
+      ctx.strokeStyle = 'rgba(255,255,0,0.35)';
+      for (const [ai, bi] of nearPairs) {
+        const A = blobs[ai];
+        const B = blobs[bi];
+        if (!A || !B) continue;
+        ctx.beginPath();
+        ctx.moveTo(A.x, A.y);
+        ctx.lineTo(B.x, B.y);
+        ctx.stroke();
+      }
+      ctx.restore();
+
+      // draw stats text
+      ctx.save();
+      ctx.fillStyle = 'rgba(255,255,255,0.9)';
+      ctx.font = '12px monospace';
+      ctx.fillText(`checks: ${(collisionStats as any).checks}`, 8, 18);
+      ctx.fillText(`near: ${(collisionStats as any).near}`, 8, 34);
+      ctx.fillText(`collided: ${(collisionStats as any).collided}`, 8, 50);
+      ctx.restore();
     }
 
     const drawBlob = (b: Blob) => {
@@ -726,7 +881,10 @@ function InkBlobsCanvas() {
       ctx.shadowBlur = 0;
       ctx.fill();
       ctx.lineWidth = 1.2;
-      ctx.strokeStyle = `rgba(${cr},${cg},${cb},0.55)`;
+      const collided = (b as any)._collided;
+      ctx.strokeStyle = collided
+        ? `rgba(255,255,255,0.95)`
+        : `rgba(${cr},${cg},${cb},0.55)`;
       ctx.stroke();
       ctx.restore();
     };
